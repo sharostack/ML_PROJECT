@@ -1,9 +1,10 @@
 # stage6_full_model.py
 import torch
 import torch.nn as nn
-from stage4_periodic_pyramid import PeriodicPyramid
-from stage5_baseline import PatchEmbedding
+from per_pyr import PeriodicPyramid
+from baseline import PatchEmbedding
 
+#normal transformer scaled w drift
 class DriftConditionedAttention(nn.Module):
     """Drift-gated Transformer encoder layer."""
     def __init__(self, d_model=64, nhead=4, F=14):
@@ -24,11 +25,12 @@ class DriftConditionedAttention(nn.Module):
         z       : (B, N, d_model)
         delta_d : (B, F)
         """
+        # transformer learns features and we convert drift to gate
         gate = self.drift_gate(delta_d).unsqueeze(1)  # (B, 1, d_model)
         z = self.encoder(z) * gate                     # element-wise gate
         return z
 
-
+#final pred uses both drift signals
 class JointForecastHead(nn.Module):
     """
     ŷ = Linear(z) · σ(W_g [δ_d ; δ_p])
@@ -49,7 +51,7 @@ class JointForecastHead(nn.Module):
                    torch.cat([delta_d, delta_p], dim=-1)))  # (B, 1)
         return (base * g).squeeze(-1)                  # (B,)
 
-
+#full model 
 class DriftAwarePatchTST(nn.Module):
     def __init__(self, in_channels=14, d_model=64, nhead=4,
                  patch_len=6, stride=3, top_k=5, lam=1.0, window=30):
@@ -69,13 +71,17 @@ class DriftAwarePatchTST(nn.Module):
         trusted_embed, delta_p = self.pyramid(x, delta_d)
 
         # Ablation overrides
+        #no dist drift - ignre drift - model dsnt see drift 
         if ablation == 'no_D':
             delta_d_eff = torch.zeros_like(delta_d)
         else:
             delta_d_eff = delta_d
 
+        #no periodic drift
         if ablation == 'no_dP':
             delta_p_eff = torch.zeros_like(delta_p)
+        
+        #pattern used but affected by drift 
         elif ablation == 'periodic_only':
             delta_d_eff = torch.zeros_like(delta_d)   # zero out D
             delta_p_eff = delta_p                       # keep only ΔP

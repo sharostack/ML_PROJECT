@@ -20,6 +20,11 @@ class PeriodicPyramid(nn.Module):
         self.register_buffer('prev_amp', torch.zeros(1, top_k, in_channels))
         self._prev_initialized = False
 
+    def reset_state(self):
+        """Clear EMA memory (call before each eval forward to avoid cross-batch leakage)."""
+        self._prev_initialized = False
+        self.prev_amp.zero_()
+
     def forward(self, x: torch.Tensor, delta_d: torch.Tensor):
         """
         x       : (B, W, F)
@@ -33,17 +38,19 @@ class PeriodicPyramid(nn.Module):
         amp     = xf.abs()                                 # (B, W//2+1, F)
         top_vals, _ = amp.topk(self.top_k, dim=1)         # (B, K, F)
 
-        # --- ΔP: actual periodic drift = L2 change in amplitude spectrum ---
-        if not self._prev_initialized:
-            self.prev_amp = top_vals.detach().mean(dim=0, keepdim=True)  # (1, K, F)
-            self._prev_initialized = True
+        # Batch mean amplitude (1, K, F) — used for EMA (train only) or local ref (eval)
+        curr_amp = top_vals.detach().mean(dim=0, keepdim=True)
 
-        # delta_p per sample per sensor: (B, F)
-        delta_p = (top_vals - self.prev_amp).abs().mean(dim=1)  # (B, F)
-
-        # Update reference: exponential moving average of batch
-        self.prev_amp = (0.9 * self.prev_amp +
-                         0.1 * top_vals.detach().mean(dim=0, keepdim=True))
+        # --- ΔP + EMA: only persist / update during training ---
+        if self.training:
+            if not self._prev_initialized:
+                self.prev_amp = curr_amp.clone()
+                self._prev_initialized = True
+            delta_p = (top_vals - self.prev_amp).abs().mean(dim=1)  # (B, F)
+            self.prev_amp = (0.9 * self.prev_amp + 0.1 * curr_amp)
+        else:
+            # Eval/test: no EMA carry-over; reference is batch-local (no cross-batch state)
+            delta_p = (top_vals - curr_amp).abs().mean(dim=1)
 
         # --- Amplitude trust: ã_k = a_k · σ(w_k − λ·δ̄_d) ---
         delta_bar = delta_d.mean(dim=-1, keepdim=True).unsqueeze(1)  # (B,1,1)

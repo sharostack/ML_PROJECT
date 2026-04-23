@@ -1,10 +1,10 @@
 # stage8_plots.py
 import torch, numpy as np, matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
-from stage2_dataset import CMAPSSDataset
-from stage3_drift import batch_ks_drift
-from stage5_baseline import BaselineTransformer
-from stage6_full_model import DriftAwarePatchTST
+from dataset import CMAPSSDataset
+from drift_det import batch_ks_drift
+from baseline import BaselineTransformer
+from full_model import DriftAwarePatchTST
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 WINDOW, CLIP = 30, 125

@@ -21,44 +21,81 @@ def add_rul(df):
 #koad dataset
 class CMAPSSDataset(Dataset):
     def __init__(self, path, window=30, clip_rul=125, split='train', val_frac=0.15,
-                 scaler=None):
+                 val_engine_fraction=None, scaler=None):
+        # Backward-compatible alias: some training scripts pass `val_engine_fraction`.
+        if val_engine_fraction is not None:
+            val_frac = val_engine_fraction
+
         COLS = ['engine_id','cycle','setting1','setting2','setting3'] + \
                [f'sensor{i}' for i in range(1,22)]
-        df = pd.read_csv(path, sep='\s+', header=None, names=COLS)
-        df = add_rul(df)
-        df['RUL'] = df['RUL'].clip(upper=clip_rul)
+        df = pd.read_csv(path, sep=r'\s+', header=None, names=COLS)
+        if split == 'test':
+            rul_file = str(path).replace('test_FD001', 'RUL_FD001')
+            true_rul = pd.read_csv(rul_file, header=None).values.flatten()
 
-        self.windows, self.labels = [], []
-        for eid, grp in df.groupby('engine_id'):
-            vals = grp[USE_SENSORS].values
-            rul  = grp['RUL'].values
-            #creating sliidng windows
-            for t in range(window, len(vals)):
-                self.windows.append(vals[t-window:t])
-                self.labels.append(rul[t])
+            self.windows, self.labels = [], []
 
-        self.windows = np.array(self.windows, dtype=np.float32)
-        #normalize labels - rul b/w 0 and 1
-        self.labels  = np.array(self.labels,  dtype=np.float32) / clip_rul
+            engine_ids = sorted(df['engine_id'].unique())
+            assert len(engine_ids) == len(true_rul), \
+            "Mismatch between test engines and RUL labels"
 
-        # Split FIRST, then fit scaler only on train
-        n = len(self.windows)
-        #train validation split
-        split_idx = int(n * (1 - val_frac))
+            for i, eid in enumerate(engine_ids):
+                grp = df[df['engine_id'] == eid].sort_values('cycle')
+                vals = grp[USE_SENSORS].values
+                last_window = vals[-window:]
+                self.windows.append(last_window)
 
-        if split == 'train':
-            #train
-            self.windows = self.windows[:split_idx]
-            self.labels  = self.labels[:split_idx]
-            # Fit scaler on train windows only
-            flat = self.windows.reshape(-1, self.windows.shape[-1])
-            self.scaler = MinMaxScaler().fit(flat)
-        else:
-            #validation
-            self.windows = self.windows[split_idx:]
-            self.labels  = self.labels[split_idx:]
-            assert scaler is not None, "Pass train scaler to val dataset"
+                rul_val = min(true_rul[i], clip_rul)
+                self.labels.append(rul_val / clip_rul)
+
+            self.windows = np.array(self.windows, dtype=np.float32)
+            self.labels  = np.array(self.labels, dtype=np.float32)
+
+            assert scaler is not None
             self.scaler = scaler
+        else:
+            # Engine-level split (prevents the same engine appearing in both sets).
+            all_engines = df['engine_id'].unique()
+            n_val = int(len(all_engines) * val_frac)
+
+            val_engines = set(all_engines[-n_val:]) if n_val > 0 else set()
+            train_engines = set(all_engines[:-n_val]) if n_val > 0 else set(all_engines)
+
+            # Safety: enforce no overlap of engine IDs across splits.
+            assert len(train_engines & val_engines) == 0, "Engine overlap between train and val"
+
+            split_engines = train_engines if split == 'train' else val_engines
+            if split == 'val' and len(split_engines) == 0:
+                raise ValueError(f"No validation engines created (val_frac={val_frac}).")
+
+            df_split = df[df['engine_id'].isin(split_engines)].copy()
+            df_split = add_rul(df_split)
+            df_split['RUL'] = df_split['RUL'].clip(upper=clip_rul)
+
+            # Build windows/labels AFTER splitting.
+            self.windows, self.labels = [], []
+            for eid, grp in df_split.groupby('engine_id'):
+                grp = grp.sort_values('cycle')
+                vals = grp[USE_SENSORS].values
+                rul  = grp['RUL'].values
+
+                # Create sliding windows for this engine.
+                for t in range(window, len(vals)):
+                    self.windows.append(vals[t-window:t])
+                    self.labels.append(rul[t-1])
+
+            self.windows = np.array(self.windows, dtype=np.float32)
+
+            # Normalize labels to [0, 1] using CLIP_RUL (only once).
+            self.labels  = np.array(self.labels, dtype=np.float32) / clip_rul
+
+            # Fit scaler ONLY on train-window data.
+            if split == 'train':
+                flat = self.windows.reshape(-1, self.windows.shape[-1])
+                self.scaler = MinMaxScaler().fit(flat)
+            else:
+                assert scaler is not None, "Pass train scaler to val dataset"
+                self.scaler = scaler
 
         # Transform
         B, W, F = self.windows.shape
