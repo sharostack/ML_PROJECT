@@ -1,0 +1,23 @@
+artifact_path: /Users/sharo2/Downloads/projects/MLPROJ/mlruns/1/models/m-fce3c3e24cfa4b63beb56d5a87af71fc/artifacts
+flavors:
+  python_function:
+    config:
+      device: null
+    data: data
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.pytorch
+    pickle_module_name: mlflow.pytorch.pickle_module
+    python_version: 3.12.2
+  pytorch:
+    code: null
+    model_data: data
+    pytorch_version: 2.7.1
+mlflow_version: 3.10.1
+model_id: m-fce3c3e24cfa4b63beb56d5a87af71fc
+model_size_bytes: 391638
+model_uuid: m-fce3c3e24cfa4b63beb56d5a87af71fc
+prompts: null
+run_id: 6750957aae1145f99a87cfc0e456db88
+utc_time_created: '2026-04-24 14:46:57.160176'

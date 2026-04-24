@@ -11,12 +11,14 @@ WINDOW, CLIP = 30, 125
 
 val_ds  = CMAPSSDataset('CMAPSSData/train_FD001.txt', window=WINDOW, split='val')
 val_dl  = DataLoader(val_ds, batch_size=256, shuffle=False)
-ref_x,_ = next(iter(val_dl)); ref = ref_x[0]
+ref_batch = next(iter(val_dl))
+ref = ref_batch[0][0]
 
 def get_preds(model, loader, use_drift=False):
     model.eval(); preds, trues = [], []
     with torch.no_grad():
-        for x, y in loader:
+        for batch in loader:
+            x, y = batch[0], batch[1]
             x = x.to(DEVICE)
             d = batch_ks_drift(x, ref).to(DEVICE) if use_drift else None
             yh = model(x, d)[0] if use_drift else model(x)

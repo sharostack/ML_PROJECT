@@ -33,7 +33,7 @@ class CMAPSSDataset(Dataset):
             rul_file = str(path).replace('test_FD001', 'RUL_FD001')
             true_rul = pd.read_csv(rul_file, header=None).values.flatten()
 
-            self.windows, self.labels = [], []
+            self.windows, self.labels, self.engine_ids = [], [], []
 
             engine_ids = sorted(df['engine_id'].unique())
             assert len(engine_ids) == len(true_rul), \
@@ -44,6 +44,7 @@ class CMAPSSDataset(Dataset):
                 vals = grp[USE_SENSORS].values
                 last_window = vals[-window:]
                 self.windows.append(last_window)
+                self.engine_ids.append(int(eid))
 
                 rul_val = min(true_rul[i], clip_rul)
                 self.labels.append(rul_val / clip_rul)
@@ -73,7 +74,7 @@ class CMAPSSDataset(Dataset):
             df_split['RUL'] = df_split['RUL'].clip(upper=clip_rul)
 
             # Build windows/labels AFTER splitting.
-            self.windows, self.labels = [], []
+            self.windows, self.labels, self.engine_ids = [], [], []
             for eid, grp in df_split.groupby('engine_id'):
                 grp = grp.sort_values('cycle')
                 vals = grp[USE_SENSORS].values
@@ -83,6 +84,7 @@ class CMAPSSDataset(Dataset):
                 for t in range(window, len(vals)):
                     self.windows.append(vals[t-window:t])
                     self.labels.append(rul[t-1])
+                    self.engine_ids.append(int(eid))
 
             self.windows = np.array(self.windows, dtype=np.float32)
 
@@ -104,7 +106,11 @@ class CMAPSSDataset(Dataset):
 
     def __len__(self): return len(self.windows)
     def __getitem__(self, i):
-        return torch.tensor(self.windows[i]), torch.tensor(self.labels[i])
+        return (
+            torch.tensor(self.windows[i]),
+            torch.tensor(self.labels[i]),
+            torch.tensor(self.engine_ids[i], dtype=torch.long),
+        )
 def get_loaders(window=30, batch_size=64):
     train_ds = CMAPSSDataset('/Users/sharo2/Downloads/projects/archive/train_FD001.txt', window=window, split='train')
     val_ds   = CMAPSSDataset('/Users/sharo2/Downloads/projects/archive/train_FD001.txt', window=window, split='val',
@@ -120,5 +126,6 @@ if __name__ == '__main__':
     ds = CMAPSSDataset('/Users/sharo2/Downloads/projects/archive/train_FD001.txt', window=30)
     print(f"Train samples: {len(ds)}, window shape: {ds[0][0].shape}")
     dl = DataLoader(ds, batch_size=64, shuffle=True)
-    x, y = next(iter(dl))
+    batch = next(iter(dl))
+    x, y = batch[0], batch[1]
     print(f"Batch X: {x.shape}, Y: {y.shape}")

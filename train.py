@@ -86,7 +86,8 @@ def compute_ref(train_dl) -> torch.Tensor:
     running_sum = None
     n_total = 0
     with torch.no_grad():
-        for x, _ in train_dl:
+        for batch in train_dl:
+            x = batch[0]
             if running_sum is None:
                 running_sum = x.sum(dim=0)
             else:
@@ -116,7 +117,8 @@ def get_loaders():
         scaler=train_ds.scaler,
     )
 
-    train_dl = DataLoader(train_ds, batch_size=BATCH, shuffle=True,  num_workers=0)
+    # Keep temporal order so ΔP uses true t -> t-1 progression per engine.
+    train_dl = DataLoader(train_ds, batch_size=BATCH, shuffle=False, num_workers=0)
     val_dl   = DataLoader(val_ds,   batch_size=BATCH, shuffle=False, num_workers=0)
 
     ref_dl = DataLoader(train_ds, batch_size=BATCH, shuffle=False, num_workers=0)
@@ -133,13 +135,17 @@ def train_epoch(model, loader, opt, criterion, ref,
     model.train()
     total_loss = 0.0
 
-    for x, y in loader:
+    for batch in loader:
+        x, y = batch[0], batch[1]
+        engine_ids = batch[2] if len(batch) > 2 else None
         x, y = x.to(DEVICE), y.to(DEVICE)
+        if engine_ids is not None:
+            engine_ids = engine_ids.to(DEVICE)
         opt.zero_grad()
 
         if use_drift:
             delta_d = batch_ks_drift(x, ref).to(DEVICE)
-            y_hat, _ = model(x, delta_d, ablation=ablation)
+            y_hat, _ = model(x, delta_d, ablation=ablation, engine_ids=engine_ids)
         else:
             y_hat = model(x)
 
@@ -170,15 +176,18 @@ def _reset_periodic_eval_state(model):
 def eval_epoch(model, loader, ref, use_drift=False, ablation=None):
     model.eval()
     preds, trues = [], []
+    _reset_periodic_eval_state(model)
 
-    for x, y in loader:
+    for batch in loader:
+        x, y = batch[0], batch[1]
+        engine_ids = batch[2] if len(batch) > 2 else None
         x = x.to(DEVICE)
-
-        _reset_periodic_eval_state(model)
+        if engine_ids is not None:
+            engine_ids = engine_ids.to(DEVICE)
 
         if use_drift:
             delta_d = batch_ks_drift(x, ref).to(DEVICE)
-            y_hat, _ = model(x, delta_d, ablation=ablation)
+            y_hat, _ = model(x, delta_d, ablation=ablation, engine_ids=engine_ids)
         else:
             y_hat = model(x)
 
@@ -231,10 +240,6 @@ def run(variant_name):
     best_ckpt  = CKPT_DIR / f'best_{variant_name}.pt'
     no_improve = 0
 
-    print(f"\n{'='*60}")
-    print(f"  Training : {variant_name}  |  device={DEVICE}  |  ablation={ablation}")
-    print(f"{'='*60}")
-
     with mlflow.start_run(run_name=variant_name):
         mlflow.set_tag('model_type', variant_name)          # Fix 3
         mlflow.log_params({
@@ -258,21 +263,17 @@ def run(variant_name):
                     {'val_mae': mae, 'val_rmse': rmse, 'val_nasa': nasa}, step=ep
                 )
 
-                flag = ''
                 if mae < best_mae:
                     best_mae   = mae
                     no_improve = 0
                     torch.save({'epoch': ep, 'state_dict': model.state_dict(),
                                 'best_mae': best_mae}, best_ckpt)
-                    flag = '  <- best'
                 else:
                     no_improve += 1
 
-                print(f"  Ep {ep:3d} | Loss {loss:.4f} | "
-                      f"MAE {mae:.2f} | RMSE {rmse:.2f} | NASA {nasa:.1f}{flag}")
+                print(f"Ep {ep} | Loss {loss:.4f} | MAE {mae:.2f} | RMSE {rmse:.2f} | NASA {nasa:.1f}")
 
                 if no_improve >= PATIENCE:
-                    print(f"  Early stop at ep {ep} (no gain for {PATIENCE} evals)")
                     break
 
         ckpt = torch.load(best_ckpt, map_location=DEVICE)
@@ -284,9 +285,6 @@ def run(variant_name):
                             'best_val_nasa': nasa})
         mlflow.log_artifact(str(best_ckpt))                 # Fix 3
         mlflow.pytorch.log_model(model, f'model_{variant_name}')
-
-        print(f"\n  [{variant_name}]  Best -> "
-              f"MAE: {mae:.2f}  RMSE: {rmse:.2f}  NASA: {nasa:.1f}")
 
     return mae, rmse, nasa
 

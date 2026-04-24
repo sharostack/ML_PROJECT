@@ -16,16 +16,20 @@ class PeriodicPyramid(nn.Module):
         self.w_k   = nn.Parameter(torch.ones(top_k))
         self.freq_proj = nn.Linear(top_k * in_channels, in_channels)
 
-        # Stores previous batch amplitudes for ΔP computation
-        self.register_buffer('prev_amp', torch.zeros(1, top_k, in_channels))
-        self._prev_initialized = False
+        # Stores previous per-engine amplitudes for true temporal ΔP.
+        self.prev_amp = None
+        self.prev_amp_by_engine = {}
 
-    def reset_state(self):
-        """Clear EMA memory (call before each eval forward to avoid cross-batch leakage)."""
-        self._prev_initialized = False
-        self.prev_amp.zero_()
+    def reset_state(self, engine_ids=None):
+        """Clear temporal memory globally or for specific engine IDs."""
+        if engine_ids is None:
+            self.prev_amp = None
+            self.prev_amp_by_engine.clear()
+            return
+        for eid in engine_ids:
+            self.prev_amp_by_engine.pop(int(eid), None)
 
-    def forward(self, x: torch.Tensor, delta_d: torch.Tensor):
+    def forward(self, x: torch.Tensor, delta_d: torch.Tensor, engine_ids=None):
         """
         x       : (B, W, F)
         delta_d : (B, F)
@@ -38,19 +42,28 @@ class PeriodicPyramid(nn.Module):
         amp     = xf.abs()                                 # (B, W//2+1, F)
         top_vals, _ = amp.topk(self.top_k, dim=1)         # (B, K, F)
 
-        # Batch mean amplitude (1, K, F) — used for EMA (train only) or local ref (eval)
-        curr_amp = top_vals.detach().mean(dim=0, keepdim=True)
+        # Current periodic signature per sample: (B, F)
+        curr_amp = top_vals.mean(dim=1)
 
-        # --- ΔP + EMA: only persist / update during training ---
-        if self.training:
-            if not self._prev_initialized:
-                self.prev_amp = curr_amp.clone()
-                self._prev_initialized = True
-            delta_p = (top_vals - self.prev_amp).abs().mean(dim=1)  # (B, F)
-            self.prev_amp = (0.9 * self.prev_amp + 0.1 * curr_amp)
+        # --- Temporal ΔP: compare current vs previous for same engine/sample stream ---
+        delta_p = torch.zeros_like(curr_amp)
+        if engine_ids is None:
+            if self.prev_amp is None:
+                delta_p = torch.zeros_like(curr_amp)
+            else:
+                delta_p = (curr_amp - self.prev_amp).abs()
+            self.prev_amp = curr_amp.detach()
         else:
-            # Eval/test: no EMA carry-over; reference is batch-local (no cross-batch state)
-            delta_p = (top_vals - curr_amp).abs().mean(dim=1)
+            if torch.is_tensor(engine_ids):
+                engine_ids = engine_ids.detach().cpu().tolist()
+            for b, eid in enumerate(engine_ids):
+                eid = int(eid)
+                prev = self.prev_amp_by_engine.get(eid)
+                if prev is None:
+                    delta_p[b] = 0.0
+                else:
+                    delta_p[b] = (curr_amp[b] - prev).abs()
+                self.prev_amp_by_engine[eid] = curr_amp[b].detach()
 
         # --- Amplitude trust: ã_k = a_k · σ(w_k − λ·δ̄_d) ---
         delta_bar = delta_d.mean(dim=-1, keepdim=True).unsqueeze(1)  # (B,1,1)

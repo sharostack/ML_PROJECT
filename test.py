@@ -46,7 +46,8 @@ def compute_ref(train_loader):
     n = 0
 
     with torch.no_grad():
-        for x, _ in train_loader:
+        for batch in train_loader:
+            x = batch[0]
             if running_sum is None:
                 running_sum = x.sum(dim=0)
             else:
@@ -94,15 +95,18 @@ def build_model(name):
 def evaluate(model, loader, ref, use_drift=False, ablation=None):
     model.eval()
     preds, trues = [], []
+    _reset_periodic_eval_state(model)
 
-    for x, y in loader:
+    for batch in loader:
+        x, y = batch[0], batch[1]
+        engine_ids = batch[2] if len(batch) > 2 else None
         x = x.to(DEVICE)
-
-        _reset_periodic_eval_state(model)
+        if engine_ids is not None:
+            engine_ids = engine_ids.to(DEVICE)
 
         if use_drift:
             delta_d = batch_ks_drift(x, ref).to(DEVICE)
-            y_hat, _ = model(x, delta_d, ablation=ablation)
+            y_hat, _ = model(x, delta_d, ablation=ablation, engine_ids=engine_ids)
         else:
             y_hat = model(x)
 

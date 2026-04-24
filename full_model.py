@@ -60,15 +60,22 @@ class DriftAwarePatchTST(nn.Module):
         self.drift_attn  = DriftConditionedAttention(d_model, nhead, in_channels)
         self.pyramid     = PeriodicPyramid(window, in_channels, top_k, lam)
         self.head        = JointForecastHead(d_model, in_channels)
+        self.periodic_head = nn.Linear(in_channels, 1)
         self.F = in_channels
 # stage6_full_model.py — add to DriftAwarePatchTST.forward()
 
-    def forward(self, x, delta_d, ablation=None):
+    def forward(self, x, delta_d, ablation=None, engine_ids=None):
         """
         ablation: None | 'no_D' | 'no_dP' | 'periodic_only'
         """
         # Periodic pyramid always runs
-        trusted_embed, delta_p = self.pyramid(x, delta_d)
+        trusted_embed, delta_p = self.pyramid(x, delta_d, engine_ids=engine_ids)
+        _ = trusted_embed
+
+        # True standalone periodic baseline: no backbone, no drift fusion.
+        if ablation == 'periodic_only':
+            y_hat = self.periodic_head(delta_p).squeeze(-1)
+            return y_hat, delta_p
 
         # Ablation overrides
         #no dist drift - ignre drift - model dsnt see drift 
@@ -80,11 +87,6 @@ class DriftAwarePatchTST(nn.Module):
         #no periodic drift
         if ablation == 'no_dP':
             delta_p_eff = torch.zeros_like(delta_p)
-        
-        #pattern used but affected by drift 
-        elif ablation == 'periodic_only':
-            delta_d_eff = torch.zeros_like(delta_d)   # zero out D
-            delta_p_eff = delta_p                       # keep only ΔP
         else:
             delta_p_eff = delta_p
 
